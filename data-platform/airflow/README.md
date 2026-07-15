@@ -41,7 +41,7 @@ airflow/
 - [`pipeline_orchestration.py`](./dags/pipeline_orchestration.py): DAG principal da plataforma;
 - [`Dockerfile`](./Dockerfile): estende a imagem Apache Airflow 2.9.3;
 - [`requirements.txt`](./requirements.txt): dependências compartilhadas pelas tarefas;
-- `data/csv/`: entrada local dos arquivos do Home Credit.
+- `data/csv/`: entrada local dos arquivos do Home Credit e destino das exportações CSV manuais usadas na entrega acadêmica.
 
 ## DAG `pipeline_orchestration`
 
@@ -72,7 +72,7 @@ A DAG não possui agendamento periódico (`schedule=None`) e deve ser disparada 
 | 5 | `agg_intermediate_bureau` | `create_agg_bureau` | Indicadores agregados de bureau. |
 | 5 | `agg_intermediate_installments` | `create_agg_installments` | Indicadores de atraso em parcelas. |
 | 6 | `generate_analytical_base_table` | `run_abt_generation` | ABT final com uma linha por cliente. |
-| 7 | `train_machine_learning_model` | `run_training_pipeline` | LightGBM e métricas persistidos. |
+| 7 | `train_machine_learning_model` | `run_training_pipeline` | LightGBM, métricas e referências estatísticas persistidos. |
 
 As tarefas marcadas com a mesma ordem podem executar em paralelo. O treinamento só é liberado após a conclusão da ABT.
 
@@ -108,6 +108,8 @@ Coloque em `data-platform/airflow/data/csv`:
 - `installments_payments.csv`.
 
 O nome lógico de cada tabela e seu `chunk_size` são definidos em [`config_pipeline.json`](../DataPipeline/config_pipeline.json). A tarefa de ingestão valida se a fonte pertence ao escopo antes de carregá-la.
+
+O mesmo diretório também pode conter as bases tratadas e a ABT geradas manualmente por [`export_data.py`](../DataPipeline/export_data.py), além do catálogo original de colunas. Esses arquivos adicionais apoiam a entrega e a análise, mas não são entradas da DAG nem saídas automáticas do Airflow.
 
 ## Volumes e caminhos no container
 
@@ -195,7 +197,10 @@ Uma execução completa deve produzir:
 - tabelas brutas e tratadas no banco `data`;
 - tabela `application_abt`;
 - artefato `Model/artifacts/lightgbm_abt.pkl`;
-- arquivo `Model/artifacts/metrics.json` atualizado.
+- arquivo `Model/artifacts/metrics.json` atualizado;
+- arquivo `Model/artifacts/feature_reference.json` atualizado.
+
+Como evolução proposta, essa etapa deverá também gerar `monitoring_reference.json` e registrar no *model registry* uma nova versão candidata com o modelo, a configuração, as métricas e os baselines associados. O fluxo está descrito na [arquitetura de monitoramento do modelo em produção](../MLOps/MONITORING_ARCHITECTURE.md) e ainda não faz parte da implementação atual.
 
 ## Reexecução e recuperação
 
@@ -208,4 +213,6 @@ Os CSVs e o volume `pgdata` persistem fora do ciclo de vida dos containers. `doc
 - [PostgreSQL](../postgres/README.md)
 - [Pipeline de dados](../DataPipeline/README.md)
 - [Modelo](../Model/README.md)
+- [Monitoramento proposto](../MLOps/MONITORING_ARCHITECTURE.md)
+- [Agente acelerador de revisão de crédito proposto](../MLOps/AGENT_ARCHITECTURE.md)
 - [Jupyter](../jupyter/README.md)

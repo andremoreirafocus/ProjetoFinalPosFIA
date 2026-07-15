@@ -94,7 +94,6 @@ O holdout mede generalização e não participa do ajuste final durante a compar
 | Seção | Conteúdo |
 |---|---|
 | `metadata` | Projeto, versão, algoritmo, origem, tabela e caminho do artefato. |
-| `database` | Hosts e parâmetros de conexão dos ambientes local e Docker. |
 | `variables` | Identificador, target, features de entrada e categóricas. |
 | `parameters.split` | Holdout, estratificação e semente. |
 | `parameters.classifier` | Algoritmo e hiperparâmetros do LightGBM. |
@@ -183,7 +182,8 @@ O treinamento oficial também é a última etapa da DAG `pipeline_orchestration`
 5. Treina o modelo de avaliação e calcula AUC, Gini, KS, Average Precision e Brier.
 6. Gera relatório de classificação no threshold configurado.
 7. Retreina o LightGBM final com toda a ABT.
-8. Persiste modelo, features, categorias, métricas e metadados.
+8. Calcula o baseline estatístico das features, do score e a importância TreeSHAP global.
+9. Persiste modelo, features, categorias, métricas, metadados e referências.
 
 O parâmetro `--sample-size` limita a consulta e existe para smoke tests. Ele não deve ser usado para gerar o artefato oficial.
 
@@ -202,8 +202,10 @@ O comando consulta o cliente em `application_abt`, carrega `artifacts/lightgbm_a
 |---|---|
 | `artifacts/lightgbm_abt.pkl` | Modelo LightGBM oficial e metadados necessários à inferência. |
 | [`artifacts/metrics.json`](./artifacts/metrics.json) | Métricas e hiperparâmetros da execução persistida. |
+| `artifacts/feature_reference.json` | Distribuições das features e do score, referências por target e importância TreeSHAP global. |
 | [`artifacts/model_comparison.csv`](./artifacts/model_comparison.csv) | Resultado histórico de comparação de modelos. |
-| `artifacts/logistic_regression_abt.pkl` | Artefato histórico anterior à seleção do LightGBM. |
+
+Atualmente, os três artefatos da execução oficial são gravados nos mesmos caminhos e substituem os arquivos anteriores. A proposta de [monitoramento do modelo em produção](../MLOps/MONITORING_ARCHITECTURE.md) introduz um *model registry* para preservar cada versão junto com sua configuração, métricas e baselines, além de controlar promoção e rollback.
 
 ### Contrato do artefato LightGBM
 
@@ -223,6 +225,29 @@ O Pickle oficial é um dicionário com os elementos necessários para que outro 
 | `config_version` | Versão lógica da configuração. |
 
 A API aceita `features` e normaliza internamente esse nome para `input_features`, preservando compatibilidade com artefatos anteriores.
+
+### Referências para explicação e para o agente acelerador de revisão de crédito
+
+Após ajustar o modelo final, `train.py` gera `feature_reference.json` com a mesma
+versão e instante de treinamento do artefato. Para features numéricas, o arquivo
+registra contagem, ausências, média, desvio-padrão, mínimo, máximo, percentis de
+0 a 100 e medianas por target. Para flags binárias, registra também a proporção
+geral e por target. Para categóricas, registra contagem, frequência e taxa
+histórica de inadimplência por categoria. Também inclui a distribuição do score
+e, para cada feature, média e percentis 50, 75, 90, 95 e 99 do valor SHAP
+absoluto em uma amostra reproduzível, cujo tamanho é definido por
+`parameters.reference.shap_sample_size`.
+
+Esse baseline permite combinar a contribuição SHAP local retornada pela API com
+a posição estatística do cliente na população usada pelo treinamento. Os valores
+SHAP permanecem na escala bruta do modelo e não representam variação percentual
+de probabilidade.
+
+Essas referências foram acrescentadas ao treinamento para preparar informações
+determinísticas e versionadas que possam ser consumidas pelo futuro agente acelerador de revisão de crédito. O agente acelerador de revisão de crédito não acessará os dados de treino nem calculará estatísticas:
+receberá da API a explicação local já enriquecida com este baseline e apenas a
+converterá em um relatório para o analista. A arquitetura desse fluxo está em
+[Arquitetura proposta para o agente acelerador de revisão de crédito](../MLOps/AGENT_ARCHITECTURE.md).
 
 ## Como estabelecemos confiança no modelo
 

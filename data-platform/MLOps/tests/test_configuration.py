@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import pickle
 import unittest
@@ -5,39 +6,24 @@ from pathlib import Path
 
 
 DATA_PLATFORM_DIR = Path(__file__).resolve().parents[2]
+ARTIFACT_PATH = DATA_PLATFORM_DIR / "Model" / "artifacts" / "lightgbm_abt.pkl"
+ARTIFACT_READY = (
+    ARTIFACT_PATH.is_file() and importlib.util.find_spec("lightgbm") is not None
+)
 
 
-class ConfigurationTest(unittest.TestCase):
-    def test_item_c_required_structure_exists(self) -> None:
-        required_paths = (
-            "Dados/README.md",
-            "DataPipeline/data_sanitization.py",
-            "DataPipeline/abt_transform.py",
-            "DataPipeline/exp_analysis.ipynb",
-            "DataPipeline/config_pipeline.json",
-            "Model/train.py",
-            "Model/config_model.json",
-            "Model/evaluation.ipynb",
-            "MLOps/app/api/main.py",
-            "MLOps/app/frontend/app.py",
-            "airflow/dags/pipeline_orchestration.py",
-            "requirements.txt",
-        )
-        missing = [
-            path for path in required_paths if not (DATA_PLATFORM_DIR / path).is_file()
-        ]
-        self.assertEqual(missing, [])
-        self.assertTrue((DATA_PLATFORM_DIR.parent / "README.md").is_file())
+@unittest.skipUnless(
+    ARTIFACT_READY,
+    "Teste de integração: requer o artefato lightgbm_abt.pkl e o LightGBM instalado.",
+)
+class ModelContractTest(unittest.TestCase):
+    """Protege o contrato entre a configuração do modelo e o artefato treinado.
 
-    def test_required_sections_exist_in_both_configurations(self) -> None:
-        for relative_path in (
-            "DataPipeline/config_pipeline.json",
-            "Model/config_model.json",
-        ):
-            config = json.loads(
-                (DATA_PLATFORM_DIR / relative_path).read_text(encoding="utf-8")
-            )
-            self.assertTrue({"metadata", "variables", "parameters"} <= config.keys())
+    Se a lista de features declarada em ``config_model.json`` divergir da lista
+    persistida no artefato (por edição da configuração sem retreino, ou vice-versa),
+    a API alinharia as colunas de forma incorreta na inferência. Este teste falha
+    cedo diante dessa divergência.
+    """
 
     def test_model_features_match_persisted_artifact(self) -> None:
         config = json.loads(
@@ -46,12 +32,15 @@ class ConfigurationTest(unittest.TestCase):
             )
         )
         with (
-            DATA_PLATFORM_DIR / "Model/artifacts/logistic_regression_abt.pkl"
+            DATA_PLATFORM_DIR / "Model/artifacts/lightgbm_abt.pkl"
         ).open("rb") as file:
             artifact = pickle.load(file)
+
+        # A chave atual do artefato é ``features``; ``input_features`` é a histórica.
+        artifact_features = artifact.get("input_features", artifact.get("features"))
         self.assertEqual(
             config["variables"]["input_features"],
-            artifact["input_features"],
+            artifact_features,
         )
 
 

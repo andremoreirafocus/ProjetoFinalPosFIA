@@ -25,7 +25,7 @@ A plataforma cobre dois ciclos complementares:
 1. **Ciclo de desenvolvimento e treinamento:** ingestão das fontes, preparação da ABT, análise, comparação de modelos, treinamento e persistência do artefato.
 2. **Ciclo de inferência:** recuperação ou fornecimento das features, cálculo do score, aplicação da política demonstrativa e apresentação do resultado.
 
-Monitoramento contínuo, registry de modelos, autenticação e implantação produtiva estão descritos como próximos passos; não fazem parte da implementação atual.
+Monitoramento contínuo e agente acelerador de revisão de crédito estão detalhados como propostas futuras e não fazem parte da implementação atual. As propostas de [monitoramento do modelo em produção](./MLOps/MONITORING_ARCHITECTURE.md) e do [agente acelerador de revisão de crédito](./MLOps/AGENT_ARCHITECTURE.md) distinguem os pré-requisitos já disponíveis dos componentes ainda não implementados. Atualmente, os artefatos ficam em um único diretório persistente, compartilhado entre os containers por volumes do tipo *bind mount*, e são sobrescritos a cada treinamento. A proposta de monitoramento introduz um *model registry*, com MLflow como implementação inicial sugerida, para preservar versões, associar seus baselines e controlar promoção e rollback. Autenticação e implantação produtiva são apenas citadas como possíveis evoluções adicionais, sem definição arquitetural neste projeto.
 
 ## Arquitetura
 
@@ -49,6 +49,7 @@ airflow/data/csv
                     ┌───────▼───┐ ┌───▼────────────────┐
                     │ Jupyter   │ │ Modelo LightGBM    │
                     │ EDA       │ │ artefato + métricas│
+                    │           │ │ + referências      │
                     └───────────┘ └─────────┬──────────┘
                                            │
                               ┌────────────▼────────────┐
@@ -79,7 +80,7 @@ airflow/data/csv
 | Agregação | tabelas temporárias por `sk_id_curr` | Converte relações um-para-muitos em features por cliente. |
 | Analítica | `application_abt` | Contrato tabular compartilhado entre análise, treinamento e inferência. |
 | Modelagem | `config_model.json`, notebooks, `train.py` | Seleciona, avalia e treina o LightGBM. |
-| Artefatos | `lightgbm_abt.pkl`, `metrics.json` | Transporta modelo, categorias, features e metadados para inferência. |
+| Artefatos | `lightgbm_abt.pkl`, `metrics.json`, `feature_reference.json` | Transportam o modelo e seus metadados, as métricas da avaliação e as referências estatísticas. |
 | Serving | FastAPI e política de crédito | Expõe o score e converte faixas em recomendações. |
 | Experiência | Streamlit | Permite demonstrar preenchimento, recuperação e consulta de clientes. |
 
@@ -104,7 +105,7 @@ airflow/data/csv
 | DataPipeline | Ingestão, limpeza, agregações e ABT | [DataPipeline/README.md](./DataPipeline/README.md) |
 | Jupyter | Ambiente dos notebooks de análise e modelagem | [jupyter/README.md](./jupyter/README.md) |
 | Model | Seleção, treinamento, avaliação e inferência local | [Model/README.md](./Model/README.md) |
-| MLOps | API, política de crédito, frontend e testes | [MLOps/README.md](./MLOps/README.md) |
+| MLOps | API, política de crédito, frontend, testes e propostas arquiteturais | [MLOps/README.md](./MLOps/README.md) |
 
 ## Fluxo de dados e modelo
 
@@ -112,7 +113,7 @@ airflow/data/csv
 2. A DAG carrega as quatro fontes no banco `data`.
 3. O pipeline cria tabelas tratadas e agregações por `sk_id_curr`.
 4. A tabela `application_abt` consolida as features preditoras em uma linha por cliente.
-5. O treinamento selecionado gera `Model/artifacts/lightgbm_abt.pkl` e `metrics.json`.
+5. O treinamento selecionado gera `Model/artifacts/lightgbm_abt.pkl`, `metrics.json` e `feature_reference.json`.
 6. A API carrega o artefato e consulta a ABT quando recebe um identificador de cliente.
 7. A política transforma o score em aprovação, revisão manual ou rejeição demonstrativa.
 8. O Streamlit disponibiliza formulário, recuperação editável e consulta direta.
@@ -129,7 +130,7 @@ Analista disponibiliza CSVs
   → ABT é materializada
   → LightGBM é treinado e avaliado em holdout
   → modelo final é retreinado com toda a ABT
-  → artefato e métricas são persistidos
+  → artefato, métricas e referências estatísticas são persistidos
 ```
 
 O pipeline pode ser reexecutado para reconstruir as tabelas derivadas e atualizar o artefato. A seleção de algoritmo e hiperparâmetros permanece documentada nos notebooks, enquanto a DAG executa a configuração já escolhida.
@@ -156,6 +157,7 @@ Essa abordagem reduz divergência entre engenharia de atributos offline e online
 | Fontes e tabelas do pipeline | `DataPipeline/config_pipeline.json` | DAG e módulos de transformação. |
 | Features e hiperparâmetros | `Model/config_model.json` | treinamento, avaliação e validações. |
 | Artefato de inferência | `Model/artifacts/lightgbm_abt.pkl` | script local e API. |
+| Referências estatísticas | `Model/artifacts/feature_reference.json` | API e consumidores de explicações. |
 | Schema HTTP | `MLOps/app/api/schemas.py` | API e frontend. |
 | Limites da política | variáveis `CREDIT_*` | API e apresentação do resultado. |
 
@@ -168,7 +170,7 @@ data-platform/
 ├── airflow/             # ambiente e DAG de orquestração
 ├── DataPipeline/        # ingestão, transformações, ABT e EDA
 ├── jupyter/             # imagem do ambiente de notebooks
-├── MLOps/               # FastAPI, Streamlit e testes
+├── MLOps/               # aplicações, testes e propostas arquiteturais
 ├── Model/               # treinamento, avaliação e artefatos
 ├── postgres/            # inicialização do banco data
 ├── Dados/               # pasta reservada aos CSVs da entrega acadêmica
@@ -187,28 +189,61 @@ Para execução local fora de containers, também é necessário Python compatí
 ## Configuração inicial
 
 O Docker Compose lê automaticamente o arquivo `data-platform/.env`, localizado no
-mesmo diretório de `docker-compose.yml`. Antes de iniciar os serviços, crie ou
-revise esse arquivo com as configurações locais da plataforma:
+mesmo diretório de `docker-compose.yml`. **Todas** as variáveis e credenciais dos
+serviços foram externalizadas para esse arquivo — o `docker-compose.yml` não
+contém mais valores fixos, apenas referências `${VARIÁVEL}` interpoladas a partir
+do `.env`. Por ser um repositório acadêmico/público, o `.env` já está versionado
+com valores de demonstração; basta revisá-lo caso queira trocar portas, senhas ou
+o token do Jupyter:
 
 ```dotenv
-# Obrigatória: token solicitado no acesso ao JupyterLab
-JUPYTER_TOKEN=defina-um-token-local
+# Postgres (credenciais e nomes dos bancos)
+POSTGRES_USER=airflow
+POSTGRES_PASSWORD=airflow
+POSTGRES_DB=airflow
+POSTGRES_DATA_DB=data
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
 
-# Obrigatórias: limites da política de decisão de crédito
+# Airflow (segurança e usuário admin)
+AIRFLOW_SECRET_KEY=tcc_fia_labdata_engenharia_dados
+AIRFLOW_FERNET_KEY=7777777777777777777777777777777777777777777=
+AIRFLOW_ADMIN_USERNAME=admin
+AIRFLOW_ADMIN_PASSWORD=admin
+AIRFLOW_ADMIN_FIRSTNAME=Admin
+AIRFLOW_ADMIN_LASTNAME=User
+AIRFLOW_ADMIN_ROLE=Admin
+AIRFLOW_ADMIN_EMAIL=admin@example.com
+POOL_INGESTAO_SIZE=2
+POOL_SANITIZATION_SIZE=2
+POOL_AGGREGATION_SIZE=2
+
+# Jupyter
+JUPYTER_TOKEN=analytics
+
+# Credit API
+MODEL_PATH=/app/Model/artifacts/lightgbm_abt.pkl
+MODEL_LOAD_RETRY_SECONDS=5
+CREDIT_POLICY_VERSION=demo-v1
 CREDIT_APPROVE_MAX_SCORE=0.50
 CREDIT_MANUAL_REVIEW_MAX_SCORE=0.60
-
-# Opcionais: carga do modelo e portas publicadas no computador hospedeiro
-MODEL_LOAD_RETRY_SECONDS=5
-CREDIT_API_PORT=8000
-CREDIT_FRONTEND_PORT=8501
 ```
 
 ### Variáveis utilizadas pela composição
 
 | Variável | Obrigatoriedade | Finalidade | Padrão |
 |---|---|---|---:|
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` | Obrigatórias | Credenciais do PostgreSQL, reutilizadas nas connection strings do Airflow e da API. | Sem padrão |
+| `POSTGRES_DB` | Obrigatória | Banco de metadados do Airflow. | Sem padrão |
+| `POSTGRES_DATA_DB` | Obrigatória | Banco analítico (fontes, tabelas tratadas e ABT). | Sem padrão |
+| `POSTGRES_HOST` / `POSTGRES_PORT` | Obrigatórias | Host e porta internos usados para montar as connection strings. | Sem padrão |
+| `AIRFLOW_SECRET_KEY` | Obrigatória | Chave do webserver, compartilhada entre os serviços do Airflow. | Sem padrão |
+| `AIRFLOW_FERNET_KEY` | Obrigatória | Chave de criptografia de conexões e variáveis do Airflow. | Sem padrão |
+| `AIRFLOW_ADMIN_*` | Obrigatórias | Dados do usuário admin criado na inicialização (`USERNAME`, `PASSWORD`, `FIRSTNAME`, `LASTNAME`, `ROLE`, `EMAIL`). | Sem padrão |
+| `POOL_INGESTAO_SIZE` / `POOL_SANITIZATION_SIZE` / `POOL_AGGREGATION_SIZE` | Obrigatórias | Tamanho dos pools do Airflow que limitam o paralelismo por etapa da DAG. | Sem padrão |
 | `JUPYTER_TOKEN` | Obrigatória | Token usado para autenticar o acesso ao JupyterLab. | Sem padrão |
+| `MODEL_PATH` | Obrigatória | Caminho do artefato do modelo dentro do container da API. | Sem padrão |
+| `CREDIT_POLICY_VERSION` | Obrigatória | Versão declarada da política de crédito, retornada nas respostas da API. | Sem padrão |
 | `CREDIT_APPROVE_MAX_SCORE` | Obrigatória | Limite superior da aprovação automática. Scores abaixo desse valor recebem recomendação de aprovação. | Sem padrão |
 | `CREDIT_MANUAL_REVIEW_MAX_SCORE` | Obrigatória | Limite superior da análise manual. Scores a partir desse valor recebem recomendação de rejeição. | Sem padrão |
 | `MODEL_LOAD_RETRY_SECONDS` | Opcional | Intervalo entre tentativas de carregamento do artefato. Enquanto o modelo não estiver disponível, a API permanece ativa e `/health` responde `503`. | `5` segundos |
@@ -221,14 +256,10 @@ valores do exemplo, scores abaixo de `0.50` são aprovados automaticamente, scor
 entre `0.50` e `0.60` seguem para análise humana e scores a partir de `0.60`
 recebem recomendação de rejeição.
 
-O token do Jupyter deve ser substituído por um valor próprio, especialmente em
-ambientes compartilhados. Não publique tokens ou credenciais reais no
-repositório.
-
-> **Importante:** as credenciais do PostgreSQL, os bancos do Airflow e do
-> Metabase e a conexão interna do Airflow estão atualmente declarados diretamente
-> em `docker-compose.yml`. Variáveis de nomes semelhantes adicionadas ao `.env`
-> não alteram esses serviços enquanto a composição não fizer referência a elas.
+> **Importante:** os valores versionados no `.env` são apenas de demonstração,
+> internos e sem valor em produção — por isso o arquivo é exposto propositalmente
+> neste contexto acadêmico. Em um ambiente real, o `.env` **não** deve ser
+> versionado e as credenciais devem ser substituídas por segredos próprios.
 
 Para conferir a substituição das variáveis e visualizar a configuração final sem
 iniciar os containers:
@@ -324,8 +355,8 @@ Para acompanhar as tentativas:
 docker compose logs -f credit-api
 ```
 
-O contrato completo e exemplos das respostas estão descritos no
-[`README` do MLOps](MLOps/README.md#carregamento-do-modelo-e-health-check).
+O contrato completo e exemplos das respostas estão descritos na
+[documentação da API](MLOps/API.md#carregamento-do-modelo).
 
 ## Execução do pipeline
 
@@ -371,6 +402,7 @@ docker compose down
 
 - calibrar o score quando houver necessidade de interpretação probabilística;
 - validar thresholds com custos reais do negócio;
-- implementar monitoramento contínuo de dados, modelo e serviço;
+- implementar a proposta de [monitoramento contínuo de dados, modelo e serviço](./MLOps/MONITORING_ARCHITECTURE.md), incluindo o *model registry* e o versionamento dos artefatos;
+- implementar a proposta do [agente acelerador de revisão de crédito](./MLOps/AGENT_ARCHITECTURE.md);
 - formalizar versionamento, rastreabilidade e auditoria das decisões;
 - automatizar testes, build e implantação.

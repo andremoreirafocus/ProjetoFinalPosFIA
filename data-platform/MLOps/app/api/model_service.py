@@ -24,7 +24,8 @@ class PredictionService:
         self.model_path = model_path
         self.artifact: dict[str, Any] | None = None
 
-    def load(self) -> None:
+    def read_artifact(self) -> dict[str, Any]:
+        """Lê e valida o artefato sem substituir o modelo em memória."""
         if not self.model_path.is_file():
             raise FileNotFoundError(f"Modelo não encontrado: {self.model_path}")
 
@@ -41,7 +42,10 @@ class PredictionService:
         if "input_features" not in artifact:
             artifact["input_features"] = artifact["features"]
 
-        self.artifact = artifact
+        return artifact
+
+    def load(self) -> None:
+        self.artifact = self.read_artifact()
 
     @property
     def is_loaded(self) -> bool:
@@ -57,9 +61,30 @@ class PredictionService:
         self._ensure_loaded()
         return float(self.artifact["decision_threshold"])
 
+    @property
+    def model(self) -> Any:
+        self._ensure_loaded()
+        return self.artifact["model"]
+
+    @property
+    def config_version(self) -> str | None:
+        self._ensure_loaded()
+        return self.artifact.get("config_version")
+
+    @property
+    def trained_at_utc(self) -> str | None:
+        self._ensure_loaded()
+        return self.artifact.get("trained_at_utc")
+
     def predict(self, features: dict[str, Any]) -> tuple[float, int]:
         self._ensure_loaded()
+        customer = self.prepare_customer(features)
+        risk_score = float(self.model.predict_proba(customer)[0, 1])
+        predicted_class = int(risk_score >= self.decision_threshold)
+        return risk_score, predicted_class
 
+    def prepare_customer(self, features: dict[str, Any]) -> pd.DataFrame:
+        """Restaura ordem, tipos e categorias usados no treinamento."""
         missing_features = sorted(set(self.expected_features).difference(features))
         if missing_features:
             raise ModelInputError(missing_features)
@@ -77,9 +102,7 @@ class PredictionService:
                 )
             else:
                 customer[column] = pd.to_numeric(customer[column], errors="coerce")
-        risk_score = float(self.artifact["model"].predict_proba(customer)[0, 1])
-        predicted_class = int(risk_score >= self.decision_threshold)
-        return risk_score, predicted_class
+        return customer
 
     def _ensure_loaded(self) -> None:
         if self.artifact is None:
